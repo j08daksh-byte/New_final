@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Turbofan Predictive Maintenance</title>
+<meta name="description" content="Remaining-useful-life prediction and maintenance prioritisation on NASA C-MAPSS turbofan data.">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#f4f6f8;--card:#fff;--ink:#16202b;--mute:#5d6b7a;--line:#dfe5eb;--accent:#0b5cad;
+--crit:#c62828;--high:#e06c00;--med:#b08900;--low:#2e7d32;--band:rgba(11,92,173,.14)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f151c;--card:#18212b;--ink:#e8edf2;--mute:#9aa8b6;
+--line:#2a3541;--accent:#5aa9f0;--crit:#ef6b6b;--high:#ff9d4d;--med:#e0c04a;--low:#6cc070;--band:rgba(90,169,240,.18)}}
+:root[data-theme=dark]{--bg:#0f151c;--card:#18212b;--ink:#e8edf2;--mute:#9aa8b6;--line:#2a3541;--accent:#5aa9f0;
+--crit:#ef6b6b;--high:#ff9d4d;--med:#e0c04a;--low:#6cc070;--band:rgba(90,169,240,.18)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:20px 16px 48px}
+header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+h1{font-size:24px;margin:0 0 4px}
+h2{font-size:16px;margin:0 0 4px}
+.sub{color:var(--mute);margin:0;max-width:760px}
+.hint{color:var(--mute);font-size:13px;margin:0 0 12px}
+.links a,button.ghost{color:var(--accent);text-decoration:none;font-weight:600;margin-left:14px;background:none;border:0;cursor:pointer;font:inherit;font-weight:600}
+.grid{display:grid;gap:14px}
+.kpis{grid-template-columns:repeat(4,1fr);margin-bottom:14px}
+.two{grid-template-columns:1.25fr 1fr;margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;min-width:0}
+.kpi .v{font-size:28px;font-weight:700;line-height:1.2}
+.kpi .l{color:var(--mute);font-size:13px}
+.kpi .n{font-size:12px;color:var(--mute);margin-top:4px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--mute);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+tbody tr{cursor:pointer}
+tbody tr:hover,tbody tr.sel{background:var(--band)}
+.scroll{max-height:420px;overflow:auto}
+.pill{display:inline-block;padding:1px 9px;border-radius:99px;font-size:12px;font-weight:700;color:#fff}
+.CRITICAL{background:var(--crit)}.HIGH{background:var(--high)}.MEDIUM{background:var(--med)}.LOW{background:var(--low)}
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.filters button{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:99px;padding:4px 12px;cursor:pointer;font:inherit;font-size:13px}
+.filters button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.chart{position:relative;height:280px}
+.chart.sm{height:200px}
+.note{font-size:13px;color:var(--mute)}
+.note li{margin-bottom:4px}
+.models td:first-child{white-space:normal}
+.best td{font-weight:700}
+@media (max-width:860px){.kpis{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div>
+    <h1>Turbofan Predictive Maintenance</h1>
+    <p class="sub">Predicts how many operating cycles each engine has left before failure and ranks the fleet for maintenance.
+    Results are for the 100 held-out test engines of the NASA C-MAPSS FD001 data set.</p>
+  </div>
+  <div class="links"><button class="ghost" id="theme">Dark mode</button><a href="https://github.com/S-Harshni/Turbofan-Predictive-Maintenance">Source on GitHub</a></div>
+</header>
+
+<section class="grid kpis" id="kpis"></section>
+
+<section class="grid two">
+  <div class="card">
+    <h2>Maintenance queue</h2>
+    <p class="hint">Engines sorted by predicted remaining life. Select a row to inspect the engine.</p>
+    <div class="filters" id="filters"></div>
+    <div class="scroll"><table><thead><tr><th>Engine</th><th>Priority</th><th class="num">Predicted RUL</th><th class="num">80% range</th><th class="num">Actual RUL</th><th class="num">Cycles run</th></tr></thead><tbody id="queue"></tbody></table></div>
+  </div>
+  <div class="card">
+    <h2 id="dtitle">Engine</h2>
+    <p class="hint" id="dsub"></p>
+    <div class="chart sm"><canvas id="rulChart"></canvas></div>
+    <p class="hint" style="margin-top:12px">Sensor trends (20-cycle rolling mean)</p>
+    <div class="chart sm"><canvas id="sensorChart"></canvas></div>
+  </div>
+</section>
+
+<section class="grid two">
+  <div class="card">
+    <h2>Predicted vs actual remaining life</h2>
+    <p class="hint">One point per test engine. Points on the diagonal are exact; points above it overestimate life, the costly direction.</p>
+    <div class="chart"><canvas id="scatter"></canvas></div>
+  </div>
+  <div class="card">
+    <h2>Which sensors drive the prediction</h2>
+    <p class="hint">Permutation importance, summed over each sensor's features (cycles of change in predicted RUL).</p>
+    <div class="chart"><canvas id="imp"></canvas></div>
+  </div>
+</section>
+
+<section class="grid two">
+  <div class="card">
+    <h2>Model comparison</h2>
+    <p class="hint">RMSE in cycles, lower is better. CV is 5-fold cross-validation grouped by engine; test is the official held-out set.</p>
+    <table class="models"><thead><tr><th>Model</th><th class="num">CV RMSE</th><th class="num">Test RMSE</th><th class="num">NASA score</th></tr></thead><tbody id="models"></tbody></table>
+  </div>
+  <div class="card">
+    <h2>Does it catch engines that are due?</h2>
+    <p class="hint">An alert is raised when predicted RUL is at or below the threshold.</p>
+    <table><thead><tr><th>Threshold</th><th class="num">Truly due</th><th class="num">Caught</th><th class="num">Recall</th><th class="num">False alerts</th></tr></thead><tbody id="alerts"></tbody></table>
+    <ul class="note" id="notes"></ul>
+  </div>
+</section>
+</div>
+
+<script>
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const charts = {};
+let D, filter = 'ALL', selected;
+
+function draw(id, cfg){ if(charts[id]) charts[id].destroy(); charts[id] = new Chart(document.getElementById(id), cfg); }
+function axes(x, y){ const g = {color: css('--line')}, t = {color: css('--mute')};
+  return {x:{title:{display:true,text:x,color:css('--mute')},grid:g,ticks:t}, y:{title:{display:true,text:y,color:css('--mute')},grid:g,ticks:t}}; }
+
+function kpis(){
+  const final = D.models.find(m => m.model === D.final_model), raw = D.models.find(m => m.model.startsWith('Gradient boosting, raw'));
+  const n = b => D.engines.filter(e => e.band === b).length;
+  const cut = Math.round(100 * (1 - final.test_rmse / raw.test_rmse));
+  const items = [
+    [D.engines.length, 'Test engines monitored', D.dataset.test_cycles.toLocaleString() + ' operating cycles'],
+    [n('CRITICAL') + n('HIGH'), 'Need attention (critical + high)', n('CRITICAL') + ' critical, ' + n('HIGH') + ' high'],
+    [final.test_rmse.toFixed(1) + ' cycles', 'Prediction error (test RMSE)', cut + '% lower than the same model on raw sensors'],
+    [Math.round(D.band_agreement * 100) + '%', 'Priority band matches the truth', 'across all ' + D.engines.length + ' test engines'],
+  ];
+  document.getElementById('kpis').innerHTML = items.map(i => `<div class="card kpi"><div class="v">${i[0]}</div><div class="l">${i[1]}</div><div class="n">${i[2]}</div></div>`).join('');
+}
+
+function queue(){
+  const bands = ['ALL', ...D.bands.map(b => b.name)];
+  document.getElementById('filters').innerHTML = bands.map(b => `<button class="${b === filter ? 'on' : ''}" data-b="${b}">${b === 'ALL' ? 'All' : b[0] + b.slice(1).toLowerCase()} (${b === 'ALL' ? D.engines.length : D.engines.filter(e => e.band === b).length})</button>`).join('');
+  document.querySelectorAll('#filters button').forEach(b => b.onclick = () => { filter = b.dataset.b; queue(); });
+  const rows = D.engines.filter(e => filter === 'ALL' || e.band === filter).sort((a, b) => a.pred - b.pred);
+  document.getElementById('queue').innerHTML = rows.map(e => `<tr data-id="${e.id}" class="${e.id === selected ? 'sel' : ''}"><td>#${e.id}</td><td><span class="pill ${e.band}">${e.band}</span></td><td class="num">${e.pred.toFixed(0)}</td><td class="num">${e.lo.toFixed(0)}–${e.hi.toFixed(0)}</td><td class="num">${e.true}</td><td class="num">${e.cycles}</td></tr>`).join('');
+  document.querySelectorAll('#queue tr').forEach(r => r.onclick = () => detail(+r.dataset.id));
+}
+
+function detail(id){
+  selected = id; const e = D.engines.find(x => x.id === id);
+  document.querySelectorAll('#queue tr').forEach(r => r.classList.toggle('sel', +r.dataset.id === id));
+  document.getElementById('dtitle').innerHTML = `Engine #${e.id} <span class="pill ${e.band}">${e.band}</span>`;
+  document.getElementById('dsub').textContent = `Predicted ${e.pred.toFixed(0)} cycles left (80% range ${e.lo.toFixed(0)}–${e.hi.toFixed(0)}); actually failed ${e.true} cycles after the last reading.`;
+  const acc = css('--accent');
+  draw('rulChart', {type:'line', data:{labels:e.t, datasets:[
+    {label:'Upper', data:e.rul_hi, borderWidth:0, pointRadius:0, fill:false},
+    {label:'80% range', data:e.rul_lo, borderWidth:0, pointRadius:0, fill:'-1', backgroundColor:css('--band')},
+    {label:'Predicted RUL', data:e.rul, borderColor:acc, borderWidth:2, pointRadius:0, tension:.2}]},
+    options:{maintainAspectRatio:false, animation:false, plugins:{legend:{labels:{color:css('--mute'), filter:i => i.text !== 'Upper'}}}, scales:axes('Operating cycle', 'Predicted RUL (cycles)')}});
+  const cols = [acc, css('--crit'), css('--low'), css('--high')];
+  const norm = a => { const lo = Math.min(...a), hi = Math.max(...a); return a.map(v => hi > lo ? (v - lo) / (hi - lo) : 0); };
+  draw('sensorChart', {type:'line', data:{labels:e.t, datasets:Object.keys(e.sensors).map((s, i) => ({label:D.sensor_names[s], data:norm(e.sensors[s]), borderColor:cols[i], borderWidth:1.6, pointRadius:0, tension:.2}))},
+    options:{maintainAspectRatio:false, animation:false, plugins:{legend:{labels:{color:css('--mute'), boxWidth:12, font:{size:11}}}}, scales:axes('Operating cycle', 'Scaled 0–1 per engine')}});
+}
+
+function overview(){
+  const col = {CRITICAL:css('--crit'), HIGH:css('--high'), MEDIUM:css('--med'), LOW:css('--low')};
+  const cap = D.dataset.rul_cap;
+  draw('scatter', {type:'scatter', data:{datasets:[
+    {label:'Test engines', data:D.engines.map(e => ({x:Math.min(e.true, cap), y:e.pred, id:e.id})), pointBackgroundColor:D.engines.map(e => col[e.band]), pointRadius:4},
+    {label:'Perfect prediction', type:'line', data:[{x:0,y:0},{x:cap,y:cap}], borderColor:css('--mute'), borderDash:[5,4], borderWidth:1, pointRadius:0}]},
+    options:{maintainAspectRatio:false, animation:false, onClick:(ev, el) => { if(el.length && el[0].datasetIndex === 0) detail(D.engines[el[0].index].id); },
+      plugins:{legend:{labels:{color:css('--mute')}}, tooltip:{callbacks:{label:c => c.raw.id ? `Engine #${c.raw.id}: actual ${c.raw.x}, predicted ${c.raw.y.toFixed(0)}` : ''}}},
+      scales:axes('Actual RUL (cycles, capped at ' + cap + ')', 'Predicted RUL (cycles)')}});
+  draw('imp', {type:'bar', data:{labels:D.importance.map(i => i.label), datasets:[{data:D.importance.map(i => i.value), backgroundColor:css('--accent')}]},
+    options:{indexAxis:'y', maintainAspectRatio:false, animation:false, plugins:{legend:{display:false}}, scales:axes('Importance (cycles)', '')}});
+  document.getElementById('models').innerHTML = D.models.map(m => `<tr class="${m.model === D.final_model ? 'best' : ''}"><td>${m.model}</td><td class="num">${m.cv_rmse.toFixed(2)}</td><td class="num">${m.test_rmse.toFixed(2)}</td><td class="num">${Math.round(m.nasa_score).toLocaleString()}</td></tr>`).join('');
+  document.getElementById('alerts').innerHTML = D.alerts.map(a => `<tr><td>RUL ≤ ${a.threshold}</td><td class="num">${a.due}</td><td class="num">${a.caught}</td><td class="num">${Math.round(a.recall * 100)}%</td><td class="num">${a.flagged - a.caught}</td></tr>`).join('');
+  const iv = D.interval;
+  document.getElementById('notes').innerHTML = [
+    `The 80% range covered the true value for ${Math.round(iv.coverage * 100)}% of test engines after conformal calibration (${Math.round(iv.coverage_before_calibration * 100)}% before), so it is still too narrow.`,
+    `Remaining life is capped at ${cap} cycles: above that an engine is treated as healthy.`,
+    `Priority bands (critical ≤ 20, high ≤ 50, medium ≤ 80 cycles) are project assumptions.`,
+    `C-MAPSS is simulated engine data from NASA, with one operating condition and one fault mode in FD001.`,
+  ].map(t => `<li>${t}</li>`).join('');
+}
+
+function render(){ kpis(); queue(); overview(); detail(selected); }
+document.getElementById('theme').onclick = e => {
+  const dark = (document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light')) !== 'dark';
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light'; e.target.textContent = dark ? 'Light mode' : 'Dark mode'; render();
+};
+fetch('data.json').then(r => r.json()).then(d => { D = d; selected = [...d.engines].sort((a, b) => a.pred - b.pred)[0].id; render(); });
+</script>
+</body>
+</html>
