@@ -11,6 +11,26 @@ SEED = 42
 # Project-defined bands (cycles of remaining life). They are assumptions, not an airline standard.
 BANDS = [("CRITICAL", 20), ("HIGH", 50), ("MEDIUM", 80)]
 
+def calibrate_margin(lo_m, hi_m, X_cal, y_cal, groups_cal, level: float = 0.8, seed: int = SEED) -> float:
+    """Proper split-calibration simulating test-set truncation."""
+    rng = np.random.default_rng(seed)
+    cal_idx = []
+    for unit in groups_cal.unique():
+        idx = groups_cal[groups_cal == unit].index
+        cal_idx.append(rng.choice(idx))
+    
+    X_cal_sample = X_cal.loc[cal_idx]
+    y_cal_sample = y_cal.loc[cal_idx]
+    
+    lo = lo_m.predict(X_cal_sample)
+    hi = hi_m.predict(X_cal_sample)
+    scores = np.maximum(lo - y_cal_sample, y_cal_sample - hi)
+    scores = np.sort(scores)
+    n = len(scores)
+    idx = int(np.ceil((n + 1) * level)) - 1
+    idx = min(max(idx, 0), n - 1)
+    return float(scores[idx])
+
 
 def gradient_boosting(loss: str = "squared_error", quantile: float | None = None) -> HistGradientBoostingRegressor:
     return HistGradientBoostingRegressor(
@@ -42,6 +62,26 @@ def band(rul: float) -> str:
         if rul <= limit:
             return name
     return "LOW"
+
+
+def uncertainty_status(lo: float, hi: float) -> str:
+    """Return an interpretation of the prediction interval width."""
+    if hi - lo > 35:
+        return "High (Width > 35)"
+    return "Normal"
+
+
+def risk_category(pred: float, lo: float, hi: float) -> dict:
+    """Determine risk and explicitly flag if uncertainty materially changes the decision."""
+    base = band(pred)
+    pessimistic = band(lo)
+    material_change = base != pessimistic
+    return {
+        "base": base,
+        "pessimistic": pessimistic,
+        "material_change": material_change,
+        "label": f"{base} — POSSIBLE {pessimistic}" if material_change else base
+    }
 
 
 def alert_quality(true: np.ndarray, pred: np.ndarray, threshold: float) -> dict:
